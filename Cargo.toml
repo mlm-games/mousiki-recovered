@@ -1,5 +1,10 @@
 [workspace]
-members = [".", "examples/playback", "mousiki-dred-weights", "mousiki-deep-plc-weights"]
+members = [
+    ".",
+    "examples/playback",
+    "mousiki-dred-weights",
+    "mousiki-deep-plc-weights",
+]
 exclude = ["fuzz"]
 resolver = "3"
 
@@ -8,7 +13,9 @@ name = "mousiki"
 description = "Pure Rust Opus codec."
 homepage = "https://github.com/MLM-Stuff/mousiki"
 repository = "https://github.com/MLM-Stuff/mousiki"
-authors = ["nemurubaka <cijiugechu@gmail.com>"] # Seems to have Had deleted/privated the og repo
+authors = [
+    "nemurubaka <cijiugechu@gmail.com>",
+] # Seems to have Had deleted/privated the og repo
 version = "0.2.1"
 edition = "2024"
 license = "MIT"
@@ -56,13 +63,17 @@ libm = "0.2"
 cfg-if = "1.0"
 log = { version = "0.4", default-features = false }
 bitflags = "2"
-spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"], optional = true }
+spin = { version = "0.9", default-features = false, features = [
+    "mutex",
+    "spin_mutex",
+], optional = true }
 mousiki-deep-plc-weights = { version = "0.1.0", path = "mousiki-deep-plc-weights", optional = true }
 mousiki-dred-weights = { version = "0.1.0", path = "mousiki-dred-weights", optional = true }
 dhat = { version = "0.3", optional = true }
 
 
 [lints.clippy]
+cast_lossless = "warn"
 comparison_chain = "warn"
 default_trait_access = "warn"
 explicit_deref_methods = "warn"
