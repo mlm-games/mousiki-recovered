@@ -37,10 +37,9 @@ use crate::silk::enc_api::{PrefillMode, silk_encode, silk_init_encoder};
 use crate::silk::errors::SilkError;
 use crate::silk::lin2log::lin2log;
 use crate::silk::log2lin::log2lin;
-#[cfg(not(feature = "fixed_point"))]
-use crate::silk::tuning_parameters::MAX_CONSECUTIVE_DTX;
 use crate::silk::tuning_parameters::{
-    NB_SPEECH_FRAMES_BEFORE_DTX, VARIABLE_HP_MIN_CUTOFF_HZ, VARIABLE_HP_SMTH_COEF2,
+    MAX_CONSECUTIVE_DTX, NB_SPEECH_FRAMES_BEFORE_DTX, VARIABLE_HP_MIN_CUTOFF_HZ,
+    VARIABLE_HP_SMTH_COEF2,
 };
 #[cfg(feature = "dred")]
 use crate::{
@@ -851,9 +850,7 @@ struct OpusEncoderLayout {
     delay_buffer: [OpusRes; DELAY_BUFFER_SAMPLES],
     #[cfg(not(feature = "fixed_point"))]
     detected_bandwidth: i32,
-    #[cfg(not(feature = "fixed_point"))]
     nb_no_activity_ms_q1: i32,
-    #[cfg(not(feature = "fixed_point"))]
     peak_signal_energy: f32,
     #[cfg(feature = "dred")]
     dred_duration: i32,
@@ -968,9 +965,7 @@ pub struct OpusEncoder<'mode> {
     delay_buffer: [OpusRes; DELAY_BUFFER_SAMPLES],
     #[cfg(not(feature = "fixed_point"))]
     detected_bandwidth: i32,
-    #[cfg(not(feature = "fixed_point"))]
     nb_no_activity_ms_q1: i32,
-    #[cfg(not(feature = "fixed_point"))]
     peak_signal_energy: f32,
     nonfinal_frame: bool,
     range_final: u32,
@@ -1100,9 +1095,9 @@ impl<'mode> OpusEncoder<'mode> {
         #[cfg(not(feature = "fixed_point"))]
         {
             self.detected_bandwidth = 0;
-            self.nb_no_activity_ms_q1 = 0;
-            self.peak_signal_energy = 0.0;
         }
+        self.nb_no_activity_ms_q1 = 0;
+        self.peak_signal_energy = 0.0;
         self.nonfinal_frame = false;
         self.range_final = 0;
         self.dred_duration = 0;
@@ -1159,9 +1154,9 @@ impl<'mode> OpusEncoder<'mode> {
         #[cfg(not(feature = "fixed_point"))]
         {
             self.detected_bandwidth = 0;
-            self.nb_no_activity_ms_q1 = 0;
-            self.peak_signal_energy = 0.0;
         }
+        self.nb_no_activity_ms_q1 = 0;
+        self.peak_signal_energy = 0.0;
         self.nonfinal_frame = false;
         self.range_final = 0;
         Ok(())
@@ -1666,7 +1661,18 @@ fn update_dred_activity_history(encoder: &mut OpusEncoder<'_>, activity: i32, fr
     }
 }
 
-#[cfg(not(feature = "fixed_point"))]
+fn compute_frame_energy(pcm: &[i16], frame_size: usize, channels: usize) -> f32 {
+    let len = frame_size.saturating_mul(channels);
+    if len == 0 || pcm.len() < len {
+        return 0.0;
+    }
+    let energy: i64 = pcm[..len]
+        .iter()
+        .map(|&s| i64::from(s) * i64::from(s))
+        .sum();
+    energy as f32 / len as f32
+}
+
 fn is_digital_silence(pcm: &[i16], frame_size: usize, channels: usize, lsb_depth: i32) -> bool {
     let total = frame_size.saturating_mul(channels);
     if pcm.len() < total || lsb_depth <= 0 {
@@ -1676,11 +1682,19 @@ fn is_digital_silence(pcm: &[i16], frame_size: usize, channels: usize, lsb_depth
     for &sample in &pcm[..total] {
         sample_max = sample_max.max(i32::from(sample).abs());
     }
-    if lsb_depth >= 15 {
+    #[cfg(feature = "fixed_point")]
+    {
+        let _ = lsb_depth;
         sample_max == 0
-    } else {
-        let threshold = 1i32 << (15 - lsb_depth);
-        sample_max <= threshold
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        if lsb_depth >= 15 {
+            sample_max == 0
+        } else {
+            let threshold = 1i32 << (15 - lsb_depth);
+            sample_max <= threshold
+        }
     }
 }
 
@@ -2502,9 +2516,6 @@ fn encode_frame_native<'mode>(
         );
     }
 
-    #[cfg(feature = "fixed_point")]
-    let _ = is_silence;
-
     let mut bandwidth = Bandwidth::from_opus_int(bandwidth_int).unwrap_or(Bandwidth::Wide);
 
     let max_frame_bytes_i32 = max_data_bytes.min(1276);
@@ -2515,17 +2526,12 @@ fn encode_frame_native<'mode>(
     #[cfg(not(feature = "dred"))]
     let _ = dred_bitrate_bps;
 
-    #[cfg(feature = "fixed_point")]
-    let activity = 1i32;
-    #[cfg(not(feature = "fixed_point"))]
-    let activity = {
-        if is_silence {
-            0
-        } else if encoder.analysis_info.valid && encoder.analysis_info.activity < 0.02 {
-            0
-        } else {
-            1
-        }
+    let activity: i32 = if is_silence {
+        0
+    } else if encoder.analysis_info.valid && encoder.analysis_info.activity < 0.02 {
+        0
+    } else {
+        1
     };
 
     #[cfg(feature = "dred")]
@@ -3393,8 +3399,7 @@ fn encode_frame_native<'mode>(
         _ => return Err(OpusEncodeError::BadArgument),
     };
 
-    #[cfg(not(feature = "fixed_point"))]
-    if encoder.use_dtx && (encoder.analysis_info.valid || is_silence) {
+    if encoder.use_dtx && encoder.silk_mode.use_dtx == 0 {
         let frame_size_ms_q1 = 2 * 1000 * frame_size_i32 / encoder.fs;
         if decide_dtx_mode(
             activity,
@@ -3534,9 +3539,7 @@ pub fn opus_encoder_create<'mode>(
         delay_buffer: [OpusRes::default(); DELAY_BUFFER_SAMPLES],
         #[cfg(not(feature = "fixed_point"))]
         detected_bandwidth: 0,
-        #[cfg(not(feature = "fixed_point"))]
         nb_no_activity_ms_q1: 0,
-        #[cfg(not(feature = "fixed_point"))]
         peak_signal_energy: 0.0,
         nonfinal_frame: false,
         range_final: 0,
@@ -3859,7 +3862,6 @@ fn encoder_in_dtx(encoder: &OpusEncoder<'_>) -> bool {
         return true;
     }
 
-    #[cfg(not(feature = "fixed_point"))]
     if encoder.use_dtx {
         return encoder.nb_no_activity_ms_q1 >= NB_SPEECH_FRAMES_BEFORE_DTX * 20 * 2;
     }
@@ -3867,7 +3869,6 @@ fn encoder_in_dtx(encoder: &OpusEncoder<'_>) -> bool {
     false
 }
 
-#[cfg(not(feature = "fixed_point"))]
 fn decide_dtx_mode(activity: i32, nb_no_activity_ms_q1: &mut i32, frame_size_ms_q1: i32) -> bool {
     if activity == 0 {
         *nb_no_activity_ms_q1 += frame_size_ms_q1;
@@ -3940,17 +3941,13 @@ pub fn opus_encode_with_options(
     let stereo_width_q15 =
         libm::roundf(stereo_width * Q15_ONE as f32).clamp(0.0, Q15_ONE as f32) as i32;
 
-    #[cfg(not(feature = "fixed_point"))]
-    let mut is_silence = false;
-    #[cfg(feature = "fixed_point")]
-    let is_silence = false;
+    let is_silence = is_digital_silence(&pcm[..required], frame_size, channels, lsb_depth);
     #[cfg(not(feature = "fixed_point"))]
     let mut analysis_read_state = None;
     #[cfg(not(feature = "fixed_point"))]
     {
         encoder.analysis_info.valid = false;
         if encoder.silk_mode.complexity >= 7 && encoder.fs >= 16_000 {
-            is_silence = is_digital_silence(&pcm[..required], frame_size, channels, lsb_depth);
             analysis_read_state = Some(encoder.analysis.snapshot_read_state());
             encoder.analysis.application = encoder.application.to_opus_int();
             run_analysis(
@@ -4003,6 +4000,12 @@ pub fn opus_encode_with_options(
     #[cfg(feature = "fixed_point")]
     {
         encoder.voice_ratio = -1;
+    }
+
+    /* Track the peak signal energy */
+    if !is_silence {
+        let energy = compute_frame_energy(&pcm[..required], frame_size, channels);
+        encoder.peak_signal_energy = (0.999f32 * encoder.peak_signal_energy).max(energy);
     }
 
     #[cfg(feature = "dred")]
@@ -4070,10 +4073,11 @@ pub fn opus_encode_with_options(
         encoder.packet_loss_perc,
     );
 
-    #[cfg(not(feature = "fixed_point"))]
-    let silk_use_dtx = encoder.use_dtx && !(encoder.analysis_info.valid || is_silence);
-    #[cfg(feature = "fixed_point")]
-    let silk_use_dtx = encoder.use_dtx;
+    let silk_use_dtx = if cfg!(feature = "fixed_point") {
+        encoder.use_dtx && !is_silence
+    } else {
+        encoder.use_dtx && !(encoder.analysis_info.valid || is_silence)
+    };
     encoder.silk_mode.use_dtx = i32::from(silk_use_dtx);
 
     let mut mode = if matches!(encoder.application, OpusApplication::RestrictedLowDelay) {
